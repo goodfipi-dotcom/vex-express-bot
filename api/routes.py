@@ -59,6 +59,11 @@ def get_telegram_user(request: Request) -> dict:
 
 # ─── Эндпоинты ───
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/api/user/status")
 async def user_status(request: Request):
     """Статус подписки пользователя"""
