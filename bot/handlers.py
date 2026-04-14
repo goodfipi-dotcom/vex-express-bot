@@ -17,8 +17,9 @@ from db.database import (
     get_user,
     add_transaction,
     update_subscription,
+    transaction_exists,
 )
-from services.marzban import marzban
+from services.marzban import marzban, MarzbanError
 
 router = Router()
 
@@ -141,25 +142,30 @@ async def pre_checkout(query: PreCheckoutQuery):
 @router.message(F.successful_payment)
 async def successful_payment(message: Message):
     payment = message.successful_payment
+    charge_id = payment.telegram_payment_charge_id
     payload = payment.invoice_payload  # "plan_id:user_id"
     plan_id = payload.split(":")[0]
 
     if plan_id not in PLANS:
         return
 
+    # Защита от двойной обработки одного и того же платежа
+    if await transaction_exists(charge_id):
+        return
+
     name, price, days = PLANS[plan_id]
     user = message.from_user
     marzban_username = f"vex_{user.id}"
 
-    # Создаём/продлеваем пользователя в Marzban
     try:
+        # Создаём/продлеваем пользователя в Marzban
         await marzban.create_user(marzban_username, days)
         vless_link = await marzban.get_vless_link(marzban_username)
         end_date = datetime.now() + timedelta(days=days)
 
-        # Сохраняем в БД
+        # Сохраняем в БД (charge_id — защита от двойных оплат)
         await update_subscription(user.id, vless_link or "", marzban_username, end_date)
-        await add_transaction(user.id, plan_id, name, price // 100, "paid")
+        await add_transaction(user.id, plan_id, name, price // 100, "paid", charge_id)
 
         text = (
             f"✅ <b>Оплата прошла успешно!</b>\n\n"
@@ -169,9 +175,16 @@ async def successful_payment(message: Message):
         )
         await message.answer(text, reply_markup=main_keyboard(), parse_mode="HTML")
 
+    except MarzbanError as e:
+        await message.answer(
+            f"❌ VPN-панель недоступна. Деньги не списаны или будут возвращены.\n"
+            f"Поддержка: @{SUPPORT_USERNAME}\n"
+            f"<code>{e.status}: {e.message[:200]}</code>",
+            parse_mode="HTML",
+        )
     except Exception as e:
         await message.answer(
-            f"❌ Ошибка при создании VPN-аккаунта. Обратитесь в поддержку: @{SUPPORT_USERNAME}\n"
-            f"Код ошибки: {e}",
+            f"❌ Неожиданная ошибка. Поддержка: @{SUPPORT_USERNAME}\n"
+            f"<code>{type(e).__name__}: {e}</code>",
             parse_mode="HTML",
         )

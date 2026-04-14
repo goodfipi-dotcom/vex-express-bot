@@ -11,6 +11,8 @@ PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
 MARZBAN_URL = os.getenv("MARZBAN_URL", "https://your-panel.example.com")
 MARZBAN_USERNAME = os.getenv("MARZBAN_USERNAME", "admin")
 MARZBAN_PASSWORD = os.getenv("MARZBAN_PASSWORD", "")
+# Имя inbound-а в панели Marzban (зависит от настройки сервера)
+INBOUND_TAG = os.getenv("INBOUND_TAG", "VLESS TCP REALITY")
 
 # Mini App
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://your-tma.vercel.app")

@@ -7,6 +7,7 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
+from aiogram.types import LabeledPrice
 
 from config import BOT_TOKEN, PLANS, PAYMENT_PROVIDER_TOKEN
 from db.database import get_user, get_transactions as db_get_transactions
@@ -98,18 +99,31 @@ class InvoiceRequest(BaseModel):
 
 @app.post("/api/payment/invoice")
 async def create_invoice(body: InvoiceRequest, request: Request):
-    """Создание ссылки на инвойс Telegram"""
+    """Создание реальной ссылки на оплату Telegram (createInvoiceLink)"""
     tg_user = get_telegram_user(request)
 
     if body.plan_id not in PLANS:
         raise HTTPException(status_code=400, detail="Unknown plan")
 
+    if not PAYMENT_PROVIDER_TOKEN:
+        raise HTTPException(status_code=503, detail="Payments not configured")
+
     name, price, days = PLANS[body.plan_id]
 
-    # Для реальных платежей нужно создать инвойс через Bot API
-    # Пока возвращаем заглушку
+    # Локальный импорт чтобы избежать циклической зависимости с main.py
+    from bot.instance import bot
+
+    invoice_url = await bot.create_invoice_link(
+        title=f"VEX EXPRESS — {name}",
+        description=f"Безлимитный VPN на {days} дней. Высокая скорость, все устройства.",
+        payload=f"{body.plan_id}:{tg_user['id']}",
+        provider_token=PAYMENT_PROVIDER_TOKEN,
+        currency="RUB",
+        prices=[LabeledPrice(label=name, amount=price)],
+    )
+
     return {
-        "invoice_url": f"https://t.me/$invoice_placeholder_{body.plan_id}",
+        "invoice_url": invoice_url,
         "plan": name,
         "price": price // 100,
     }

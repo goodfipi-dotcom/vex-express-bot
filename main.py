@@ -6,15 +6,14 @@ VEX EXPRESS Bot — точка входа.
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram import Dispatcher
 import uvicorn
 
-from config import BOT_TOKEN
+from bot.instance import bot
 from bot.handlers import router
 from api.routes import app as fastapi_app
 from db.database import init_db
+from services.marzban import marzban
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +24,6 @@ logger = logging.getLogger("vex")
 
 async def start_bot():
     """Запуск Telegram-бота"""
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
 
@@ -51,11 +49,16 @@ async def main():
     await init_db()
     logger.info("📦 База данных инициализирована")
 
-    # Запускаем бота и API параллельно
-    await asyncio.gather(
-        start_bot(),
-        start_api(),
-    )
+    try:
+        # Запускаем бота и API параллельно
+        await asyncio.gather(
+            start_bot(),
+            start_api(),
+        )
+    finally:
+        # Корректно закрываем HTTP-сессию к Marzban
+        await marzban.close()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
