@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 import uvicorn
 
@@ -24,7 +25,7 @@ logger = logging.getLogger("vex")
 
 async def start_bot():
     """Запуск Telegram-бота"""
-    bot = Bot(token=BOT_TOKEN, default={"parse_mode": ParseMode.HTML})
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
 
