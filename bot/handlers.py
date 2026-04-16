@@ -28,27 +28,48 @@ def main_keyboard():
     """Главная клавиатура с кнопкой Mini App"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text="🚀 Открыть VEX EXPRESS",
+            text="⚡ Открыть VEX",
             web_app=WebAppInfo(url=WEBAPP_URL),
         )],
-        [InlineKeyboardButton(text="📋 Тарифы", callback_data="show_plans")],
+        [
+            InlineKeyboardButton(text="💳 Тарифы", callback_data="show_plans"),
+            InlineKeyboardButton(text="📖 Как подключить", callback_data="show_guide"),
+        ],
         [InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 
 def plans_keyboard():
     """Клавиатура выбора тарифа"""
+    labels = {
+        "1month": "1 месяц",
+        "3months": "3 месяца · выгодно",
+        "1year": "1 год · максимум",
+    }
     buttons = []
     for plan_id, (name, price, days) in PLANS.items():
         price_rub = price // 100
+        label = labels.get(plan_id, name)
         buttons.append([
             InlineKeyboardButton(
-                text=f"{name} — {price_rub} ₽",
+                text=f"{label} — {price_rub} ₽",
                 callback_data=f"buy:{plan_id}",
             )
         ])
     buttons.append([InlineKeyboardButton(text="← Назад", callback_data="back_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+START_TEXT = (
+    "<b>VEX</b> — быстрый VPN без рекламы и лимитов\n"
+    "\n"
+    "⚡ Высокая скорость — стримы, игры, звонки\n"
+    "🔒 Шифрование — никто не увидит ваш трафик\n"
+    "📱 Одна подписка — iPhone, Android, Mac, PC\n"
+    "\n"
+    "<b>От 150 ₽ в месяц.</b> Подключение за 2 минуты.\n"
+    "Нажмите <b>⚡ Открыть VEX</b>, чтобы начать."
+)
 
 
 # ─── /start ───
@@ -57,18 +78,7 @@ def plans_keyboard():
 async def cmd_start(message: Message):
     user = message.from_user
     await create_or_update_user(user.id, user.username or "", user.first_name or "")
-
-    text = (
-        "⚡ <b>VEX EXPRESS</b> — быстрый и безлимитный VPN\n\n"
-        "🔒 Полная анонимность и шифрование\n"
-        "♾ Безлимитный трафик\n"
-        "🚀 Высокая скорость подключения\n"
-        "📱 Работает на всех устройствах\n\n"
-        "💰 Всего от <b>150 ₽/мес</b>\n\n"
-        "Нажмите кнопку ниже, чтобы начать 👇"
-    )
-
-    await message.answer(text, reply_markup=main_keyboard(), parse_mode="HTML")
+    await message.answer(START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML")
 
 
 # ─── Показать тарифы ───
@@ -76,27 +86,53 @@ async def cmd_start(message: Message):
 @router.callback_query(F.data == "show_plans")
 async def show_plans(callback: CallbackQuery):
     text = (
-        "📋 <b>Тарифы VEX EXPRESS</b>\n\n"
-        "1️⃣ <b>1 месяц</b> — 150 ₽\n"
-        "3️⃣ <b>3 месяца</b> — 390 ₽ (скидка 13%)\n"
-        "🏆 <b>1 год</b> — 1 290 ₽ (скидка 28%)\n\n"
-        "Выберите тариф:"
+        "<b>Тарифы VEX</b>\n"
+        "\n"
+        "• <b>1 месяц</b> — 150 ₽\n"
+        "• <b>3 месяца</b> — 390 ₽  <i>— экономия 13%</i>\n"
+        "• <b>1 год</b> — 1 290 ₽  <i>— экономия 28%</i>\n"
+        "\n"
+        "Во все тарифы включено: безлимит, все страны, все устройства.\n"
+        "Оплата картой или Telegram Stars."
     )
     await callback.message.edit_text(text, reply_markup=plans_keyboard(), parse_mode="HTML")
     await callback.answer()
 
 
+# ─── Как подключить ───
+
+@router.callback_query(F.data == "show_guide")
+async def show_guide(callback: CallbackQuery):
+    text = (
+        "<b>Как подключить VPN</b>\n"
+        "\n"
+        "1. Оплатите любой тариф\n"
+        "2. Откройте <b>⚡ VEX</b> — получите ключ\n"
+        "3. Скачайте приложение под своё устройство:\n"
+        "   • iPhone — <b>V2Box</b> (App Store)\n"
+        "   • Android — <b>v2rayNG</b> (Google Play)\n"
+        "   • Mac — <b>V2Box</b> (Mac App Store)\n"
+        "   • Windows — <b>Nekoray</b> (GitHub)\n"
+        "4. Вставьте ключ из буфера и нажмите ▶\n"
+        "\n"
+        "Всё. VPN работает."
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="⚡ Открыть VEX",
+            web_app=WebAppInfo(url=WEBAPP_URL),
+        )],
+        [InlineKeyboardButton(text="← Назад", callback_data="back_home")],
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+
 @router.callback_query(F.data == "back_home")
 async def back_home(callback: CallbackQuery):
-    await cmd_start_from_callback(callback)
-
-
-async def cmd_start_from_callback(callback: CallbackQuery):
-    text = (
-        "⚡ <b>VEX EXPRESS</b> — быстрый и безлимитный VPN\n\n"
-        "Нажмите кнопку ниже, чтобы начать 👇"
+    await callback.message.edit_text(
+        START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML"
     )
-    await callback.message.edit_text(text, reply_markup=main_keyboard(), parse_mode="HTML")
     await callback.answer()
 
 
