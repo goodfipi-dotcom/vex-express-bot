@@ -10,6 +10,8 @@ VEX EXPRESS — Telegram Bot handlers.
 — Уведомления об истечении: отправляет services/notifier.py через планировщик
 """
 
+from pathlib import Path
+
 from aiogram import Router, F
 from aiogram.types import (
     Message,
@@ -19,6 +21,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     WebAppInfo,
+    FSInputFile,
 )
 from aiogram.filters import CommandStart, Command
 from datetime import datetime, timedelta
@@ -36,6 +39,10 @@ from db.database import (
 from services.marzban import marzban, MarzbanError
 
 router = Router()
+
+# Путь к приветственному видео и кэш file_id (чтобы не грузить файл каждый раз)
+WELCOME_VIDEO_PATH = Path(__file__).resolve().parent.parent / "assets" / "welcome.mov"
+_welcome_video_file_id: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -68,14 +75,9 @@ def payment_done_keyboard() -> InlineKeyboardMarkup:
 # ═══════════════════════════════════════════════════════════════
 
 START_TEXT = (
-    "<b>VEX</b> — быстрый VPN без рекламы и лимитов\n"
+    "<b>Добро пожаловать в VEX VPN</b>\n"
     "\n"
-    "⚡ Высокая скорость для стримов, игр, звонков\n"
-    "🔒 Шифрование — никто не увидит ваш трафик\n"
-    "📱 Одна подписка — все устройства\n"
-    "\n"
-    "<b>От 150 ₽ в месяц.</b> Подключение за 2 минуты.\n"
-    "Нажмите <b>⚡ Открыть VEX</b> и выберите тариф."
+    "Скорость. Качество. Безопасность — наши главные преимущества!"
 )
 
 HELP_TEXT = (
@@ -88,6 +90,34 @@ HELP_TEXT = (
     "\n"
     f"Нужна помощь? @{SUPPORT_USERNAME}"
 )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Приветствие: видео + текст + кнопка в одном сообщении
+# ═══════════════════════════════════════════════════════════════
+
+async def _send_welcome(message: Message) -> None:
+    """
+    Приветствие в стиле Ultima:
+    1) отдельное сообщение с видео (без caption)
+    2) отдельное сообщение с текстом и кнопками
+    После первой отправки кэшируем file_id, чтобы не перезаливать файл.
+    """
+    global _welcome_video_file_id
+
+    if _welcome_video_file_id:
+        video = _welcome_video_file_id
+    elif WELCOME_VIDEO_PATH.exists():
+        video = FSInputFile(WELCOME_VIDEO_PATH)
+    else:
+        video = None
+
+    if video is not None:
+        sent = await message.answer_video(video=video, supports_streaming=True)
+        if _welcome_video_file_id is None and sent.video:
+            _welcome_video_file_id = sent.video.file_id
+
+    await message.answer(START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -115,14 +145,14 @@ async def cmd_start_with_args(message: Message):
         await _send_invoice(message, payload[4:])
         return
 
-    await message.answer(START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML")
+    await _send_welcome(message)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user = message.from_user
     await create_or_update_user(user.id, user.username or "", user.first_name or "")
-    await message.answer(START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML")
+    await _send_welcome(message)
 
 
 # ═══════════════════════════════════════════════════════════════
