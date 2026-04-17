@@ -1,6 +1,6 @@
 """
 VEX EXPRESS Bot — точка входа.
-Запускает Telegram-бота (Aiogram 3) и API-сервер (FastAPI) параллельно.
+Запускает Telegram-бота (Aiogram 3) + API-сервер (FastAPI) + планировщик уведомлений.
 """
 
 import asyncio
@@ -14,6 +14,7 @@ from bot.handlers import router
 from api.routes import app as fastapi_app
 from db.database import init_db
 from services.marzban import marzban
+from services.notifier import run_expiry_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,18 +46,16 @@ async def start_api():
 
 
 async def main():
-    # Инициализация БД
     await init_db()
     logger.info("📦 База данных инициализирована")
 
     try:
-        # Запускаем бота и API параллельно
         await asyncio.gather(
             start_bot(),
             start_api(),
+            run_expiry_scheduler(bot),
         )
     finally:
-        # Корректно закрываем HTTP-сессию к Marzban
         await marzban.close()
         await bot.session.close()
 

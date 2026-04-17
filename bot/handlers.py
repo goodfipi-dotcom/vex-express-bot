@@ -1,3 +1,15 @@
+"""
+VEX EXPRESS — Telegram Bot handlers.
+
+Философия (скопировано с @ultimavpnbot):
+— /start отправляет ОДНО короткое сообщение с одной главной кнопкой «Открыть» (WebApp)
+— Все сложные экраны (тарифы, гайды, профиль) — в Mini App
+— Deep-links: ?start=ref_<uid> (реферал) | ?startapp=buy_1month/3months/1year | ?startapp=refer
+— Команды: /start, /help, /refer, /status
+— Успешная оплата: короткое подтверждение + кнопка открыть Mini App
+— Уведомления об истечении: отправляет services/notifier.py через планировщик
+"""
+
 from aiogram import Router, F
 from aiogram.types import (
     Message,
@@ -8,7 +20,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     WebAppInfo,
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from datetime import datetime, timedelta
 
 from config import PLANS, PAYMENT_PROVIDER_TOKEN, WEBAPP_URL, SUPPORT_USERNAME
@@ -18,61 +30,93 @@ from db.database import (
     add_transaction,
     update_subscription,
     transaction_exists,
+    grant_referral_bonus,
+    user_payment_count,
 )
 from services.marzban import marzban, MarzbanError
 
 router = Router()
 
 
-def main_keyboard():
-    """Главная клавиатура с кнопкой Mini App"""
+# ═══════════════════════════════════════════════════════════════
+# КЛАВИАТУРЫ
+# ═══════════════════════════════════════════════════════════════
+
+def webapp_button(label: str = "⚡ Открыть VEX", path: str = "") -> InlineKeyboardButton:
+    """Кнопка открытия Mini App. path — подставляется в конец WEBAPP_URL для deep-link."""
+    url = f"{WEBAPP_URL.rstrip('/')}/{path.lstrip('/')}" if path else WEBAPP_URL
+    return InlineKeyboardButton(text=label, web_app=WebAppInfo(url=url))
+
+
+def main_keyboard() -> InlineKeyboardMarkup:
+    """Главная клавиатура: одна большая WebApp-кнопка + строчка с поддержкой."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="⚡ Открыть VEX",
-            web_app=WebAppInfo(url=WEBAPP_URL),
-        )],
-        [
-            InlineKeyboardButton(text="💳 Тарифы", callback_data="show_plans"),
-            InlineKeyboardButton(text="📖 Как подключить", callback_data="show_guide"),
-        ],
+        [webapp_button("⚡ Открыть VEX")],
         [InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")],
     ])
 
 
-def plans_keyboard():
-    """Клавиатура выбора тарифа"""
-    labels = {
-        "1month": "1 месяц",
-        "3months": "3 месяца · выгодно",
-        "1year": "1 год · максимум",
-    }
-    buttons = []
-    for plan_id, (name, price, days) in PLANS.items():
-        price_rub = price // 100
-        label = labels.get(plan_id, name)
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{label} — {price_rub} ₽",
-                callback_data=f"buy:{plan_id}",
-            )
-        ])
-    buttons.append([InlineKeyboardButton(text="← Назад", callback_data="back_home")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def payment_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [webapp_button("⚡ Скопировать VPN-ключ")],
+        [InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")],
+    ])
 
+
+# ═══════════════════════════════════════════════════════════════
+# ТЕКСТЫ
+# ═══════════════════════════════════════════════════════════════
 
 START_TEXT = (
     "<b>VEX</b> — быстрый VPN без рекламы и лимитов\n"
     "\n"
-    "⚡ Высокая скорость — стримы, игры, звонки\n"
+    "⚡ Высокая скорость для стримов, игр, звонков\n"
     "🔒 Шифрование — никто не увидит ваш трафик\n"
-    "📱 Одна подписка — iPhone, Android, Mac, PC\n"
+    "📱 Одна подписка — все устройства\n"
     "\n"
     "<b>От 150 ₽ в месяц.</b> Подключение за 2 минуты.\n"
-    "Нажмите <b>⚡ Открыть VEX</b>, чтобы начать."
+    "Нажмите <b>⚡ Открыть VEX</b> и выберите тариф."
+)
+
+HELP_TEXT = (
+    "<b>Команды VEX</b>\n"
+    "\n"
+    "/start — главное меню\n"
+    "/status — состояние вашей подписки\n"
+    "/refer — реферальная ссылка (+7 дней за друга)\n"
+    "/help — это сообщение\n"
+    "\n"
+    f"Нужна помощь? @{SUPPORT_USERNAME}"
 )
 
 
-# ─── /start ───
+# ═══════════════════════════════════════════════════════════════
+# /start — с deep-link парсингом
+# ═══════════════════════════════════════════════════════════════
+
+@router.message(CommandStart(deep_link=True))
+async def cmd_start_with_args(message: Message):
+    """Обработка /start с параметром: ref_<id> | buy_<plan_id>"""
+    user = message.from_user
+    args = message.text.split(maxsplit=1)
+    payload = args[1].strip() if len(args) > 1 else ""
+
+    referrer_id = None
+    if payload.startswith("ref_"):
+        try:
+            referrer_id = int(payload[4:])
+        except ValueError:
+            referrer_id = None
+
+    await create_or_update_user(user.id, user.username or "", user.first_name or "", referrer_id)
+
+    # Deep-link на конкретный тариф — открываем invoice сразу
+    if payload.startswith("buy_") and payload[4:] in PLANS and PAYMENT_PROVIDER_TOKEN:
+        await _send_invoice(message, payload[4:])
+        return
+
+    await message.answer(START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML")
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -81,99 +125,128 @@ async def cmd_start(message: Message):
     await message.answer(START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML")
 
 
-# ─── Показать тарифы ───
+# ═══════════════════════════════════════════════════════════════
+# /help
+# ═══════════════════════════════════════════════════════════════
 
-@router.callback_query(F.data == "show_plans")
-async def show_plans(callback: CallbackQuery):
-    text = (
-        "<b>Тарифы VEX</b>\n"
-        "\n"
-        "• <b>1 месяц</b> — 150 ₽\n"
-        "• <b>3 месяца</b> — 390 ₽  <i>— экономия 13%</i>\n"
-        "• <b>1 год</b> — 1 290 ₽  <i>— экономия 28%</i>\n"
-        "\n"
-        "Во все тарифы включено: безлимит, все страны, все устройства.\n"
-        "Оплата картой или Telegram Stars."
-    )
-    await callback.message.edit_text(text, reply_markup=plans_keyboard(), parse_mode="HTML")
-    await callback.answer()
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(HELP_TEXT, parse_mode="HTML")
 
 
-# ─── Как подключить ───
+# ═══════════════════════════════════════════════════════════════
+# /status — состояние подписки
+# ═══════════════════════════════════════════════════════════════
 
-@router.callback_query(F.data == "show_guide")
-async def show_guide(callback: CallbackQuery):
-    text = (
-        "<b>Как подключить VPN</b>\n"
-        "\n"
-        "1. Оплатите любой тариф\n"
-        "2. Откройте <b>⚡ VEX</b> — получите ключ\n"
-        "3. Скачайте приложение под своё устройство:\n"
-        "   • iPhone — <b>V2Box</b> (App Store)\n"
-        "   • Android — <b>v2rayNG</b> (Google Play)\n"
-        "   • Mac — <b>V2Box</b> (Mac App Store)\n"
-        "   • Windows — <b>Nekoray</b> (GitHub)\n"
-        "4. Вставьте ключ из буфера и нажмите ▶\n"
-        "\n"
-        "Всё. VPN работает."
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="⚡ Открыть VEX",
-            web_app=WebAppInfo(url=WEBAPP_URL),
-        )],
-        [InlineKeyboardButton(text="← Назад", callback_data="back_home")],
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-    await callback.answer()
-
-
-@router.callback_query(F.data == "back_home")
-async def back_home(callback: CallbackQuery):
-    await callback.message.edit_text(
-        START_TEXT, reply_markup=main_keyboard(), parse_mode="HTML"
-    )
-    await callback.answer()
-
-
-# ─── Покупка тарифа (Telegram Payments) ───
-
-@router.callback_query(F.data.startswith("buy:"))
-async def buy_plan(callback: CallbackQuery):
-    plan_id = callback.data.split(":")[1]
-
-    if plan_id not in PLANS:
-        await callback.answer("Тариф не найден", show_alert=True)
-        return
-
-    name, price, days = PLANS[plan_id]
-
-    if not PAYMENT_PROVIDER_TOKEN:
-        await callback.answer(
-            "Платежи ещё не настроены. Обратитесь в поддержку.",
-            show_alert=True,
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    user_row = await get_user(message.from_user.id)
+    if not user_row or not user_row["subscription_end"]:
+        await message.answer(
+            "<b>Подписка не оформлена</b>\n"
+            "Откройте VEX и выберите тариф.",
+            reply_markup=main_keyboard(),
+            parse_mode="HTML",
         )
         return
 
-    await callback.message.answer_invoice(
+    end = datetime.fromisoformat(user_row["subscription_end"])
+    days_left = (end - datetime.now()).days
+
+    if end < datetime.now():
+        text = (
+            "⚠️ <b>Подписка истекла</b>\n"
+            f"Дата окончания: {end.strftime('%d.%m.%Y')}\n\n"
+            "Продлите подписку — откройте VEX."
+        )
+    else:
+        text = (
+            f"✅ <b>Подписка активна</b>\n"
+            f"Действует до: <b>{end.strftime('%d.%m.%Y')}</b> ({days_left} дн.)\n\n"
+            f"Ключ подключения — в Mini App."
+        )
+    await message.answer(text, reply_markup=main_keyboard(), parse_mode="HTML")
+
+
+# ═══════════════════════════════════════════════════════════════
+# /refer — реферальная ссылка
+# ═══════════════════════════════════════════════════════════════
+
+@router.message(Command("refer"))
+async def cmd_refer(message: Message):
+    uid = message.from_user.id
+    bot_info = await message.bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
+
+    user_row = await get_user(uid)
+    bonus_total = user_row["bonus_days_total"] if user_row and user_row["bonus_days_total"] else 0
+
+    text = (
+        "<b>Реферальная программа</b>\n"
+        "\n"
+        "За каждого друга, который оформит подписку по вашей ссылке,\n"
+        "вам <b>+7 дней</b> бесплатно.\n"
+        "\n"
+        f"Ваша ссылка:\n<code>{ref_link}</code>\n"
+        "\n"
+        f"Всего получено бонусов: <b>{bonus_total} дн.</b>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="📤 Поделиться ссылкой",
+            url=f"https://t.me/share/url?url={ref_link}&text=VEX%20VPN%20—%20быстрый%20и%20без%20рекламы",
+        )
+    ]])
+    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Покупка тарифа (inline callback)
+# ═══════════════════════════════════════════════════════════════
+
+async def _send_invoice(message: Message, plan_id: str):
+    name, price, days = PLANS[plan_id]
+
+    if not PAYMENT_PROVIDER_TOKEN:
+        await message.answer(
+            "Платежи ещё не настроены. Обратитесь в поддержку.",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    await message.answer_invoice(
         title=f"VEX EXPRESS — {name}",
         description=f"Безлимитный VPN на {days} дней. Высокая скорость, все устройства.",
-        payload=f"{plan_id}:{callback.from_user.id}",
+        payload=f"{plan_id}:{message.from_user.id}",
         provider_token=PAYMENT_PROVIDER_TOKEN,
         currency="RUB",
         prices=[LabeledPrice(label=name, amount=price)],
     )
+
+
+@router.callback_query(F.data.startswith("buy:"))
+async def buy_plan(callback: CallbackQuery):
+    plan_id = callback.data.split(":")[1]
+    if plan_id not in PLANS:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+
+    await _send_invoice(callback.message, plan_id)
     await callback.answer()
 
 
-# ─── Pre-checkout ───
+# ═══════════════════════════════════════════════════════════════
+# Pre-checkout
+# ═══════════════════════════════════════════════════════════════
 
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
     await query.answer(ok=True)
 
 
-# ─── Успешная оплата ───
+# ═══════════════════════════════════════════════════════════════
+# Успешная оплата
+# ═══════════════════════════════════════════════════════════════
 
 @router.message(F.successful_payment)
 async def successful_payment(message: Message):
@@ -185,7 +258,7 @@ async def successful_payment(message: Message):
     if plan_id not in PLANS:
         return
 
-    # Защита от двойной обработки одного и того же платежа
+    # Защита от двойной обработки
     if await transaction_exists(charge_id):
         return
 
@@ -193,27 +266,42 @@ async def successful_payment(message: Message):
     user = message.from_user
     marzban_username = f"vex_{user.id}"
 
+    # Первая ли это оплата — решает, начислить ли бонус рефереру
+    is_first_payment = (await user_payment_count(user.id)) == 0
+
     try:
-        # Создаём/продлеваем пользователя в Marzban
         await marzban.create_user(marzban_username, days)
         vless_link = await marzban.get_vless_link(marzban_username)
         end_date = datetime.now() + timedelta(days=days)
 
-        # Сохраняем в БД (charge_id — защита от двойных оплат)
         await update_subscription(user.id, vless_link or "", marzban_username, end_date)
         await add_transaction(user.id, plan_id, name, price // 100, "paid", charge_id)
+
+        # Реферальный бонус — только при первой оплате приглашённого
+        if is_first_payment:
+            referrer_id = await grant_referral_bonus(user.id, days=7)
+            if referrer_id:
+                try:
+                    await message.bot.send_message(
+                        referrer_id,
+                        "🎁 <b>+7 дней подписки!</b>\n"
+                        f"Ваш друг оформил подписку. Спасибо!",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
 
         text = (
             f"✅ <b>Оплата прошла успешно!</b>\n\n"
             f"Тариф: <b>{name}</b>\n"
             f"Действует до: <b>{end_date.strftime('%d.%m.%Y')}</b>\n\n"
-            f"Откройте Mini App, чтобы скопировать ключ подключения 👇"
+            f"Откройте VEX — скопируйте ключ и настройте VPN."
         )
-        await message.answer(text, reply_markup=main_keyboard(), parse_mode="HTML")
+        await message.answer(text, reply_markup=payment_done_keyboard(), parse_mode="HTML")
 
     except MarzbanError as e:
         await message.answer(
-            f"❌ VPN-панель недоступна. Деньги не списаны или будут возвращены.\n"
+            f"❌ VPN-панель временно недоступна. Деньги не списаны или будут возвращены.\n"
             f"Поддержка: @{SUPPORT_USERNAME}\n"
             f"<code>{e.status}: {e.message[:200]}</code>",
             parse_mode="HTML",
